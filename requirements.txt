@@ -1,7 +1,7 @@
 # Core dependencies - actively used in the codebase
 numpy
-torch
-torchvision
+# torch
+# torchvision
 Pillow
 opencv-python
 scipy
@@ -16,7 +16,7 @@ onnxruntime
 viser==0.2.23
 huggingface_hub
 evo
-
+# pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121 -i https://pypi.tuna.tsinghua.edu.cn/simple
 # ============================================================
 mmengine
 transformers
@@ -31,3 +31,10 @@ gradio==5.17.1
 hydra-core
 omegaconf
 pydantic==2.10.6
+
+# export HF_ENDPOINT=https://hf-mirror.com
+# huggingface-cli download Livioni/OmniVGGT --local-dir ./checkpoints/ --resume-download
+
+# drwxrwxr-x  2 root root 4096  4月 11  2024 bin/
+# lrwxrwxrwx  1 root root   22  4月 11  2024 cuda -> /etc/alternatives/cuda/
+# lrwxrwxrwx  1 root root   25  4月 11  2024 cuda-12 -> /etc/alternatives/cuda-12/

@@ -682,6 +682,7 @@ def load_images_and_cameras(
     depth_folder: Optional[str] = None,
     target_size: int = 518,
     max_depth: float = 100,
+    flag1v1: bool = True,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, List[int], List[int]]:
     """
     Load images and corresponding camera/depth information from folders.
@@ -735,7 +736,7 @@ def load_images_and_cameras(
         scale_y = new_height / height
 
         # Resize image
-        img = img.resize((new_width, new_height), Image.Resampling.BICUBIC)
+        # img = img.resize((new_width, new_height), Image.Resampling.BICUBIC)         
 
         # Calculate crop parameters if needed
         crop_start_y = 0
@@ -802,6 +803,192 @@ def load_images_and_cameras(
             if os.path.exists(camera_candidates):
                 extrinsic, intrinsic = load_camera_from_txt(camera_candidates)
 
+        # Process camera parameters
+        if extrinsic is not None and intrinsic is not None:
+            camera_indices.append(idx)
+
+            # Apply resize scaling to intrinsics
+            intrinsic[0, 0] *= scale_x  # fx
+            intrinsic[1, 1] *= scale_y  # fy
+            intrinsic[0, 2] *= scale_x  # cx
+            intrinsic[1, 2] *= scale_y  # cy
+
+            # Apply crop adjustment to principal point y-coordinate
+            if new_height > target_size:
+                intrinsic[1, 2] -= crop_start_y  # cy
+
+            # Convert camera-to-world to world-to-camera
+            extrinsic = closed_form_inverse_se3(extrinsic[None])[0][:3]
+        else:
+            # Use zero matrices as placeholders
+            extrinsic = np.zeros((3, 4), dtype=np.float32)
+            intrinsic = np.zeros((3, 3), dtype=np.float32)
+
+        extrinsics_list.append(extrinsic)
+        intrinsics_list.append(intrinsic)
+        
+
+    print(f"\nSummary:")
+    print(f"  Total images: {len(image_paths)}")
+    print(f"  Images with camera: {len(camera_indices)} - indices: {camera_indices}")
+    print(f"  Images with depth: {len(depth_indices)} - indices: {depth_indices}")
+
+    images = torch.stack(img_list, dim=0)
+    depthmaps = torch.from_numpy(np.array(depths_list))[None,...,None].float()
+    masks = torch.from_numpy(np.array(masks_list))[None,...].float()
+    extrinsics = torch.from_numpy(np.array(extrinsics_list))[None, ...].float()
+    intrinsics = torch.from_numpy(np.array(intrinsics_list))[None, ...].float()
+
+    return images, extrinsics, intrinsics, depthmaps, masks, depth_indices, camera_indices
+
+
+def load_images_and_cameras_processOGimages(
+    image_folder: str,
+    camera_folder: Optional[str] = None,
+    depth_folder: Optional[str] = None,
+    target_size: int = 518,
+    max_depth: float = 100,
+    flag1v1: bool = True,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, List[int], List[int]]:
+    """
+    Load images and corresponding camera/depth information from folders.
+
+    Args:
+        image_folder: Path to folder containing images
+        camera_folder: Path to folder containing camera files (optional)
+        depth_folder: Path to folder containing depth maps (optional)
+        target_size: Target size for image resizing (default: 518)
+        max_depth: Maximum valid depth value (default: 500)
+
+    Returns:
+        Tuple containing:
+        - images: Stacked image tensors
+        - extrinsics: Camera extrinsic matrices (world-to-camera)
+        - intrinsics: Camera intrinsic matrices
+        - depthmaps: Depth maps
+        - masks: Valid depth masks
+        - depth_indices: Indices of images with depth data
+        - camera_indices: Indices of images with camera data
+    """
+    # Get all image files
+    image_paths = sorted(glob.glob(os.path.join(image_folder, "*")))
+    image_paths = [p for p in image_paths if p.lower().endswith(('.png', '.jpg', '.jpeg'))]
+
+    print(f"Found {len(image_paths)} images in {image_folder}")
+    
+    img_list = []
+    extrinsics_list = []
+    intrinsics_list = []
+    depths_list = []
+    masks_list = []
+    depth_indices = []
+    camera_indices = []
+
+    for idx, img_path in enumerate(image_paths):
+        basename = Path(img_path).stem
+        img = Image.open(img_path)
+
+        # Convert RGBA to RGB with white background
+        if img.mode == "RGBA":
+            background = Image.new("RGBA", img.size, (255, 255, 255, 255))
+            img = Image.alpha_composite(background, img)
+        img = img.convert("RGB")
+        width, height = img.size
+
+        # Calculate resize parameters
+        # new_width = target_size
+        # new_height = round(height * (new_width / width) / 14) * 14
+        # scale_x = new_width / width
+        # scale_y = new_height / height
+
+        # Resize image
+        # img = img.resize((new_width, new_height), Image.Resampling.BICUBIC)
+        
+        if flag1v1:
+            # 计算强制缩放img到target_sizextarget_size大小
+            scale_x = target_size / width
+            scale_y = target_size / height
+            new_width = target_size
+            new_height = target_size
+            img = img.resize((new_width, new_height), Image.Resampling.BICUBIC)
+            
+        else:
+            # Resize image
+            # 计算等比例缩放img到target_size宽度，并保持高度为14的倍数
+            aspect_ratio = width / height
+            new_width = target_size
+            new_height = round(new_width / aspect_ratio / 14) * 14
+            scale_x = new_width / width
+            scale_y = new_height / height
+            img = img.resize((new_width, new_height), Image.Resampling.BICUBIC)
+            
+
+        # Calculate crop parameters if needed
+        crop_start_y = 0
+        final_height = new_height
+        if new_height > target_size:
+            crop_start_y = (new_height - target_size) // 2
+            final_height = target_size
+            # Crop image to target size
+            img = img.crop((0, crop_start_y, new_width, crop_start_y + target_size))
+
+        # Normalize image
+        img = ImgNorm(img)
+        img_list.append(img)
+
+        # Initialize camera and depth data
+        extrinsic = None
+        intrinsic = None
+        depthmap = None
+        mask = None
+        
+        # Load depth map if available
+        if depth_folder is not None:
+            depth_candidates = [
+                os.path.join(depth_folder, f"{basename}.npy"),
+                os.path.join(depth_folder, f"{basename}.png"),
+            ]
+            for depth_path in depth_candidates:
+                if os.path.exists(depth_path):
+                    if depth_path.endswith('.npy'):
+                        depthmap = np.load(depth_path).astype(np.float32)
+                        depthmap[~np.isfinite(depthmap)] = 0  # invalid
+                    elif depth_path.endswith('.png'):
+                        depthmap = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED).astype(np.float32)
+                        depthmap = depthmap.T
+                        depthmap = np.nan_to_num(depthmap.astype(np.float32), 0.0)
+
+                    # Filter invalid depth values
+                    depthmap[depthmap > max_depth] = 0
+                    depthmap[depthmap < 1e-5] = 0
+
+
+        # Process depth map (follow the same resize/crop logic as image)
+        if depthmap is not None:
+            depth_indices.append(idx)
+            # Resize depth map to match resized image dimensions (new_width x new_height)
+            # cv2.resize expects (width, height) as the second parameter
+            depthmap = cv2.resize(depthmap, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
+
+            # Crop depth map if needed (same crop as image)
+            if new_height > target_size:
+                depthmap = depthmap[crop_start_y : crop_start_y + target_size, :]
+
+            mask = depthmap > 1e-5
+        else:
+            depthmap = np.zeros((final_height, new_width), dtype=np.float32)
+            mask = np.zeros_like(depthmap, dtype=bool)
+
+        depths_list.append(depthmap)
+        masks_list.append(mask)
+
+        # Load camera parameters if available
+        if camera_folder is not None:
+            camera_candidates = os.path.join(camera_folder, f"{basename}.txt")
+            if os.path.exists(camera_candidates):
+                extrinsic, intrinsic = load_camera_from_txt(camera_candidates)
+
+        print("read in intrinsics:\n", intrinsic)
         # Process camera parameters
         if extrinsic is not None and intrinsic is not None:
             camera_indices.append(idx)

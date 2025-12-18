@@ -189,8 +189,14 @@ class Aggregator(nn.Module):
             #     self.patch_embed.mask_token.requires_grad_(False)
             
             if patch_embed == "dinov2_vitl14_reg":
-                dinov2_pretrained = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitl14_reg')
+                # dinov2_pretrained = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitl14_reg')
+                dinov2_pretrained = torch.hub.load(
+                    repo_or_dir='/home/test/.cache/torch/hub/facebookresearch_dinov2_main',  # 本地仓库路径
+                    model='dinov2_vitl14_reg',
+                    source='local'  # 强制使用本地仓库
+                )
                 self.patch_embed.load_state_dict(dinov2_pretrained.state_dict(), strict=False)
+                
             elif patch_embed == "dinov2_vitb14_reg":
                 dinov2_pretrained = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitb14_reg')
                 self.patch_embed.load_state_dict(dinov2_pretrained.state_dict(), strict=True)
