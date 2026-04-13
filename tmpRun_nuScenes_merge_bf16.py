@@ -7,6 +7,7 @@ from omnivggt.utils.geometry import closed_form_inverse_se3, unproject_depth_map
 import torch.nn.functional as F
 from PIL import Image
 import scipy.interpolate
+from safetensors.torch import load_file
 from pathlib import Path
 def world_coords_points_to_color_image(
     points: torch.Tensor,
@@ -228,16 +229,77 @@ def camera_normalization(pivotal_pose: torch.Tensor, poses: torch.Tensor):
     poses = torch.bmm(camera_norm_matrix.repeat(poses.shape[0], 1, 1), poses)
 
     return poses
+def load_ckpt_state_dict(ckpt_path: str | Path) -> dict:
+    ckpt = torch.load(str(ckpt_path), map_location="cpu")
 
+    if isinstance(ckpt, dict):
+        for key in ("state_dict", "model_state_dict", "model"):
+            nested = ckpt.get(key)
+            if isinstance(nested, dict):
+                ckpt = nested
+                break
+
+    if not isinstance(ckpt, dict):
+        raise TypeError(f"Unsupported checkpoint format in {ckpt_path}: {type(ckpt)!r}")
+
+    return ckpt
+def strip_prefix_from_state_dict(state_dict: dict, prefix: str) -> dict:
+    if not prefix:
+        return state_dict
+
+    stripped_state_dict = {}
+    for key, value in state_dict.items():
+        if key.startswith(prefix):
+            stripped_state_dict[key[len(prefix):]] = value
+        else:
+            stripped_state_dict[key] = value
+    return stripped_state_dict
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
+useOG_OmniVGGT = False
+target_size = 448
+bf16_flag = True
+
+model_full = OmniVGGT()
+aggregator = model_full.aggregator
+depth_head = model_full.depth_head
 
 # Load the model
-model = OmniVGGT().to(device)
-from safetensors.torch import load_file
-state_dict = load_file("./checkpoints/OmniVGGT.safetensors")
-model.load_state_dict(state_dict, strict=True)
-model.eval()
+if useOG_OmniVGGT:
+    state_dict = load_file("./checkpoints/checkpoints/OmniVGGT.safetensors")
+    model_full.load_state_dict(state_dict, strict=True)
+    aggregator = model_full.aggregator.float()
+    # aggregator = model_full.aggregator.to(torch.bfloat16)
+    depth_head = model_full.depth_head
+else:
+    export_root = Path('./checkpoints/merged_ckpts_00')
+    aggregator_ckpt = export_root / "aggregator_merged.ckpt"
+    depth_head_ckpt = export_root / "depth_head.ckpt"
+
+    agg_state = load_ckpt_state_dict(aggregator_ckpt)
+    dep_state = load_ckpt_state_dict(depth_head_ckpt)
+
+    agg_state = strip_prefix_from_state_dict(agg_state, "aggregator.")
+    dep_state = strip_prefix_from_state_dict(dep_state, "depth_head.")
+
+    missing_agg, unexpected_agg = aggregator.load_state_dict(agg_state, strict=False)
+    missing_dep, unexpected_dep = depth_head.load_state_dict(dep_state, strict=False)
+    # aggregator = aggregator.to(torch.bfloat16)
+    print(f"Loaded aggregator ckpt: {aggregator_ckpt}")
+    print(f"aggregator missing={len(missing_agg)}, unexpected={len(unexpected_agg)}")
+    print(f"Loaded depth_head ckpt: {depth_head_ckpt}")
+    print(f"depth_head missing={len(missing_dep)}, unexpected={len(unexpected_dep)}")
+
+del model_full
+
+if bf16_flag:
+    aggregator = aggregator.to(device=device, dtype=torch.bfloat16)
+    depth_head = depth_head.to(device=device, dtype=torch.bfloat16)
+else:
+    aggregator = aggregator.to(device)
+    depth_head = depth_head.to(device)
+aggregator.eval()
+depth_head.eval()
 
 # Load and preprocess images
 # images, extrinsics, intrinsics, depthmaps, masks, depth_indices, camera_indices = \
@@ -254,7 +316,7 @@ images, extrinsics_raw, intrinsics, depthmaps, masks, depth_indices, camera_indi
         camera_folder="example/nuscenesTmp1OG/cameras_cam2world/",  # Optional cameras_cam2world cameras_cam2ego
         # camera_folder=None,  # Optional
         depth_folder=None,   # Optional
-        target_size=448,
+        target_size=target_size,
         flag1v1=False,
     )
 
@@ -279,32 +341,80 @@ extrinsics = normalized_w2c.unsqueeze(0)[:, :, :3, :4]
 
 print("before model intrinsics:", intrinsics)
 # Prepare inputs
-inputs = {
-    'images': images.to(device),
-    'extrinsics': extrinsics.to(device),
-    'intrinsics': intrinsics.to(device),
-    'depth': depthmaps.to(device),
-    'mask': masks.to(device),
-    'depth_gt_index': depth_indices,
-    'camera_gt_index': camera_indices
-}
+# inputs = {
+#     'images': images.to(device),
+#     'extrinsics': extrinsics.to(device),
+#     'intrinsics': intrinsics.to(device),
+#     'depth': depthmaps.to(device),
+#     'mask': masks.to(device),
+#     'depth_gt_index': depth_indices,
+#     'camera_gt_index': camera_indices
+# }
+images = images.to(device)
+extrinsics = extrinsics_raw.to(device)
+intrinsics = intrinsics.to(device)
+depth_omni = depthmaps.to(device)
+mask_omni = masks.to(device)
+
+model_images = images.unsqueeze(0) if images.dim() == 4 else images
+model_extrinsics = extrinsics.unsqueeze(0) if extrinsics.dim() == 3 else extrinsics
+model_intrinsics = intrinsics.unsqueeze(0) if intrinsics.dim() == 3 else intrinsics
+model_depth = depth_omni.unsqueeze(0) if depth_omni.dim() == 4 else depth_omni
+model_mask = mask_omni.unsqueeze(0) if mask_omni.dim() == 3 else mask_omni
+
+if len(images.shape) == 4:
+    images = images.unsqueeze(0)
 
 # Run inference
 # with torch.no_grad():
 #     predictions = model(**inputs)
-model.aggregator = model.aggregator.to(torch.bfloat16)
-with torch.amp.autocast("cuda", enabled=True, dtype=torch.bfloat16): # dtype=torch.bfloat16
-    # 遍历inputs，确保都是bfloat16类型
-    # for key in inputs:
-    #     if isinstance(inputs[key], torch.Tensor) and inputs[key].dtype == torch.float32:
-    #         inputs[key] = inputs[key].to(torch.bfloat16)
+aggregator = aggregator.to(torch.bfloat16)
+# with torch.amp.autocast("cuda", enabled=True, dtype=torch.bfloat16): # dtype=torch.bfloat16
+#     # 遍历inputs，确保都是bfloat16类型
+#     # for key in inputs:
+#     #     if isinstance(inputs[key], torch.Tensor) and inputs[key].dtype == torch.float32:
+#     #         inputs[key] = inputs[key].to(torch.bfloat16)
+    
+#         predictions = model(**inputs)
+
+if bf16_flag:
+    print("Running inference with bfloat16 precision for the aggregator.")
+    with torch.amp.autocast("cuda", enabled=True, dtype=torch.bfloat16):
+        # print("intput int:rinsic:", intrinsic)
+        with torch.no_grad():
+            aggregated_tokens_list, patch_start_idx = aggregator(images = model_images, 
+                                                                    extrinsics = model_extrinsics, 
+                                                                    intrinsics = model_intrinsics,
+                                                                    depth = model_depth,
+                                                                    mask = model_mask,
+                                                                    depth_gt_index = depth_indices,
+                                                                    camera_gt_index = camera_indices,
+                                                                    )      
+else:
+    print("Running inference with full precision (float32) for the aggregator.")
+    with torch.amp.autocast("cuda", enabled=False):
+        with torch.no_grad():
+            aggregated_tokens_list, patch_start_idx = aggregator(images = model_images, 
+                                                                    extrinsics = model_extrinsics, 
+                                                                    intrinsics = model_intrinsics,
+                                                                    depth = model_depth,
+                                                                    mask = model_mask,
+                                                                    depth_gt_index = depth_indices,
+                                                                    camera_gt_index = camera_indices,
+                                                                    )          
+    
+with torch.amp.autocast("cuda", enabled=False):
     with torch.no_grad():
-        predictions = model(**inputs)
+        depth_map, depth_conf = depth_head(
+            aggregated_tokens_list,
+            images=model_images,
+            patch_start_idx=patch_start_idx,
+        )
 
 # Use GT poses instead of predicted ones
 print("Using GT poses for unprojection and reprojection.")
-extrinsics = inputs['extrinsics']
-intrinsics = inputs['intrinsics']
+# extrinsics = inputs['extrinsics']
+# intrinsics = inputs['intrinsics']
 print("extrinsics shape (GT):", extrinsics)  # (1, S, 4, 4)
 # pose_enc = predictions['pose_enc']
 # extrinsics, intrinsics = pose_encoding_to_extri_intri(pose_enc, images.shape[-2:]) 
@@ -317,7 +427,7 @@ print("extrinsics shape (GT):", extrinsics)  # (1, S, 4, 4)
 
 
 # ========== 步骤1：确保depth是torch.Tensor（未转numpy前插值） ==========
-depth_tensor = predictions['depth']  # 假设此时还是torch.Tensor，维度(S, V, H, W)
+depth_tensor = depth_map  # 假设此时还是torch.Tensor，维度(S, V, H, W)
 print(f"原始depth维度：{depth_tensor.shape}")  # 原始depth维度：torch.Size([1, 3, 294, 518, 1])
 print("extrinsics shape:", extrinsics.shape)  
 print("intrinsics shape:", intrinsics.shape)
@@ -336,14 +446,18 @@ world_coords_points_map_norm = unproject_depth_map_to_point_map(depth_tensor.squ
                                                             extrinsics.squeeze(0), 
                                                             intrinsics.squeeze(0))
 world_coords_points_map_norm = torch.from_numpy(world_coords_points_map_norm)
-image_names_norm = "037_020fgtposeDepth_normalizedPose_bf16"     
+
+if len(images.shape) == 5:
+    images = images.squeeze(0)
+    
+image_names_norm = "037_020fgtposeDepth_normalizedPose{}_{}".format("_bf16" if bf16_flag else "", "og" if useOG_OmniVGGT else "merged")      
 main_reprojection_pipeline(
     world_coords_points_map_norm,
     images,
     extrinsics,
     intrinsics,
     image_names_norm,
-    new_width=896 # 1036 896
+    new_width=target_size*2 # 1036 896
 )
 
 # ========== 版本2：使用归一化前的原始外参 (raw exts) ==========
@@ -357,14 +471,14 @@ world_coords_points_map_raw = unproject_depth_map_to_point_map(depth_tensor.sque
                                                             raw_ext_input, 
                                                             intrinsics.squeeze(0))
 world_coords_points_map_raw = torch.from_numpy(world_coords_points_map_raw)
-image_names_raw = "037_020fgtposeDepth_rawPose_bf16"     
+image_names_raw = "037_020fgtposeDepth_rawPose{}_{}".format("_bf16" if bf16_flag else "", "og" if useOG_OmniVGGT else "merged")
 main_reprojection_pipeline(
     world_coords_points_map_raw,
     images,
     extrinsics_raw, # 这里如果是 (1, S, 3, 4) main_reprojection_pipeline 内部会处理 [0, i]
     intrinsics,
     image_names_raw,
-    new_width=896
+    new_width=target_size*2
 )
 
 # CUDA_VISIBLE_DEVICES=1 python tmpRun_nuScenesUseGTposeAndDepth.py
