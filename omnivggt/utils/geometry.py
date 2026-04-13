@@ -163,11 +163,11 @@ def unproject_depth_map_to_point_map(
         np.ndarray: Batch of 3D world coordinates of shape (S, H, W, 3)
     """
     if isinstance(depth_map, torch.Tensor):
-        depth_map = depth_map.cpu().numpy()
+        depth_map = depth_map.detach().cpu().float().numpy()
     if isinstance(extrinsics_cam, torch.Tensor):
-        extrinsics_cam = extrinsics_cam.cpu().numpy()
+        extrinsics_cam = extrinsics_cam.detach().cpu().float().numpy()
     if isinstance(intrinsics_cam, torch.Tensor):
-        intrinsics_cam = intrinsics_cam.cpu().numpy()
+        intrinsics_cam = intrinsics_cam.detach().cpu().float().numpy()
 
     world_points_list = []
     for frame_idx in range(depth_map.shape[0]):

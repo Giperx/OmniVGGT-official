@@ -38,3 +38,13 @@ pydantic==2.10.6
 # drwxrwxr-x  2 root root 4096  4月 11  2024 bin/
 # lrwxrwxrwx  1 root root   22  4月 11  2024 cuda -> /etc/alternatives/cuda/
 # lrwxrwxrwx  1 root root   25  4月 11  2024 cuda-12 -> /etc/alternatives/cuda-12/
+
+# 20260202 commnet
+# pip install trimesh onnxruntime-gpu==1.17.1 viser==0.2.23 evo -i https://pypi.tuna.tsinghua.edu.cn/simple
+###
+# UserWarning: xFormers is available
+# 2026-02-02 15:45:53.853700886 [W:onnxruntime:Default, device_discovery.cc:164 DiscoverDevicesForPlatform] GPU device discovery failed: device_discovery.cc:89 ReadFileContents Failed to open file: "/sys/class/drm/card0/device/vendor"
+# pip uninstall onnxruntime onnxruntime-gpu
+# pip install onnxruntime-gpu==1.17.1 -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# tar -czvf omnivggt260203.tar.gz --exclude=OmniVGGT-official/.git --exclude=OmniVGGT-official/.vscode --exclude=OmniVGGT-official/datasets --exclude=OmniVGGT-official/checkpoints --exclude=OmniVGGT-official/__pycache__ --exclude=OmniVGGT-official/example --exclude=OmniVGGT-official/outputsImages OmniVGGT-official/

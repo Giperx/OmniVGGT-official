@@ -161,7 +161,8 @@ class ZeroAggregator(Aggregator):
 
             extrinsics_selected = torch.index_select(extrinsics, dim=1, index=camera_idx_tensor)
             intrinsics_selected = torch.index_select(intrinsics, dim=1, index=camera_idx_tensor)
-
+            ### debug print
+            
             extrinsics_gt_normalized = self.normalize_extrinsics(extrinsics_selected)
             pose_encoding = extri_intri_to_pose_encoding(
                         extrinsics=extrinsics_gt_normalized,
